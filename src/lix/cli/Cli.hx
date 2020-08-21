@@ -35,7 +35,7 @@ class Cli {
       }
 
     var gitlab = new GitLab(grab('--gl-private-token')),
-        github = new GitHub(switch grab('--gh-credentials') {
+        github = new GitHub(scope, switch grab('--gh-credentials') {
           case null: null;
           case _.split(':') => [user, tk]: new tink.url.Auth(user, tk);
           case v: Exec.die(422, '`--gh-credentials $v` should be `--gh-credentials <user>:<token>`');

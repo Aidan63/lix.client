@@ -5,6 +5,8 @@ import tink.url.Path;
 
 @:tink class GitHub {
 
+  var scope : Scope;
+
   static function isArchive(p:Path)
     return switch p.parts() {
       case [_, _, (_:String) => 'archive', _]: true;
@@ -23,8 +25,10 @@ import tink.url.Path;
     return ['github', 'gh'];
 
   var credentials:Auth;
-  public function new(?credentials)
+  public function new(scope, ?credentials) {
+    this.scope = scope;
     this.credentials = credentials;
+  }
 
   public function grabCommit(owner, project, version)
     return switch credentials {
@@ -86,8 +90,20 @@ import tink.url.Path;
         return ({
           normalized: 'gh://${credentials}github.com/$owner/$project#$sha',
           dest: Computed(function (l) return [l.name, l.version, 'github', sha]),
-          url: 'https://${credentials}github.com/$owner/$project/archive/$sha.tar.gz',
+          url: 'https://${credentials}github.com/$owner/$project',
           lib: { name: Some(project), version: None },
+          kind: Custom(function (ctx) return {
+            var url = 'https://${credentials}github.com/$owner/$project';
+            var repo = haxe.io.Path.join([scope.libCache, '.gitrepos', DownloadedArchive.escape(url)]);
+            var git = cli(repo);
+            git.call(
+              if ('$repo/.git'.exists()) ['fetch', url]
+              else ['clone', url, '.', '--recursive']
+            )
+              .next(_ -> git.call(['-c', 'advice.detachedHead=false', 'checkout', sha]))
+              .next(_ -> Fs.copy(repo, ctx.dest, function (name) return name != '$repo/.git'))
+              .next(_ -> ctx.dest);
+          })
         } : ArchiveJob);
       case v:
         grabCommit(owner, project, v).next(doGet);
@@ -101,4 +117,34 @@ import tink.url.Path;
         getArchive(owner, Git.strip(project), url.hash, url.auth);
       default: new Error('invalid github url $url');
     }
+
+  static function eval(cmd:String, cwd:String, args:Array<String>, ?env:Env)
+    return switch js.node.ChildProcess.spawnSync(cmd, args, { cwd: cwd, stdio:['inherit', 'pipe', 'inherit'], env: Exec.mergeEnv(env) } ) {
+      case x if (x.error == null):
+        Success({
+          status: x.status,
+          stdout: (x.stdout:js.node.Buffer).toString(),
+        });
+      case { error: e }:
+        Failure(new Error('Failed to call $cmd because $e'));
+    }
+
+  static function cli(cwd:String) {
+    Fs.ensureDir(cwd.addTrailingSlash()).eager();//TODO: avoid this
+    return {
+      call: function (args:Array<String>) {
+        return Promise.lift(Exec.sync('git', cwd, args)).next(
+          function (code) return if (code == 0) Noise else new Error(code, 'git ${args[0]} failed')
+        );
+      },
+      eval: function (args:Array<String>) {
+        return Promise.lift(eval('git', cwd, args)).next(
+          function (o) return switch o {
+            case { status: 0 }: o.stdout.toString();
+            default: new Error(o.status, 'git ${args[0]} failed');
+          }
+        );
+      }
+    }
+  }
 }
